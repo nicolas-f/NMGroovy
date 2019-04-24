@@ -18,6 +18,7 @@ import groovy.sql.Sql
 import groovy.transform.SourceURI
 import org.apache.commons.io.FileUtils
 import org.h2gis.api.EmptyProgressVisitor
+import org.h2gis.api.ProgressVisitor
 import org.h2gis.functions.io.csv.CSVDriverFunction
 import org.h2gis.utilities.SpatialResultSet
 import org.h2gis.utilities.wrapper.ConnectionWrapper
@@ -26,7 +27,10 @@ import org.noise_planet.noisemodelling.emission.EvaluateRoadSourceCnossos
 import org.noise_planet.noisemodelling.emission.RSParametersCnossos
 import org.noise_planet.noisemodelling.propagation.*
 import org.noise_planet.noisemodelling.propagation.jdbc.PointNoiseMap
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 
+import java.beans.PropertyChangeListener
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -50,7 +54,7 @@ class OneRun {
 
  */
 
-        String workspace_output = "D:\\aumond\\Documents\\PROJETS\\NOISEMODELLING\\debug\\output"
+        String workspace_output = "/home/nicolas/data/gcbugnoisemodelling/debug_pointnoisemap"
         // le workspace output doit respecter une arborescence specifique
         //output
         //|- data
@@ -382,10 +386,11 @@ class OneRun {
                 pointNoiseMap.setSoundReflectionOrder(0)
                 pointNoiseMap.setHeightField("HAUTEUR")
                 pointNoiseMap.setDemTable("DEM_LITE2")
-                pointNoiseMap.setMaximumPropagationDistance(1200)
+                pointNoiseMap.setComputeHorizontalDiffraction(false)
+                pointNoiseMap.setMaximumPropagationDistance(450)
                 pointNoiseMap.setMaximumReflectionDistance(50)
                 pointNoiseMap.setWallAbsorption(0.1)
-                pointNoiseMap.setSoilTableName("LAND_USE_ZONE_CAPTEUR2")
+                //pointNoiseMap.setSoilTableName("LAND_USE_ZONE_CAPTEUR2")
                 pointNoiseMap.setThreadCount(1)
 
 
@@ -397,7 +402,7 @@ class OneRun {
                 List<PropagationPath> propaMap2 = new ArrayList<>()
                 for (int i = 0; i < pointNoiseMap.getGridDim(); i++) {
                     for (int j = 0; j < pointNoiseMap.getGridDim(); j++) {
-                        IComputeRaysOut out = pointNoiseMap.evaluateCell(connection, i, j, new EmptyProgressVisitor(), receivers_)
+                        IComputeRaysOut out = pointNoiseMap.evaluateCell(connection, i, j, new ProgressLogger(), receivers_)
                         if (out instanceof ComputeRaysOut) {
                             allLevels.addAll(((ComputeRaysOut) out).getVerticesSoundLevel())
                         }
@@ -424,12 +429,12 @@ class OneRun {
 
            String filenamebin = workspace_output + "\\Rays.bin"
 
+/*
             if (saveRays){
                 Output outputBin = new Output(new FileOutputStream(filenamebin))
                 kryo.writeObject(outputBin, out)
                 outputBin.close()
             }
-/*
             if (loadRays){
                 Input input = new Input(new FileInputStream(filenamebin))
                 propaMap = kryo.readObject(input, HashMap.class)
@@ -563,16 +568,119 @@ class OneRun {
 
 
     private static class JDBCComputeRaysOut implements PointNoiseMap.IComputeRaysOutFactory {
+        long exportReceiverRay = 0 // primary key of receiver to export
+        KMLDocument kmlDocument
+        ZipOutputStream compressedDoc
+
         @Override
         IComputeRaysOut create(PropagationProcessData threadData, PropagationProcessPathData pathData) {
-            return new RayOut(false, pathData, threadData);
+            if(kmlDocument != null) {
+                kmlDocument.writeFooter()
+                compressedDoc.closeEntry()
+                compressedDoc.close()
+            }
+            kmlDocument = null
+            if(true || !threadData.receivers.isEmpty()) {
+                compressedDoc = new ZipOutputStream(new FileOutputStream(
+                        String.format("domain_%d.kml.gz", threadData.cellId)))
+                compressedDoc.putNextEntry(new ZipEntry("doc.kml"))
+                kmlDocument = new KMLDocument(compressedDoc)
+                kmlDocument.writeHeader()
+                kmlDocument.setInputCRS("EPSG:2154")
+                kmlDocument.writeTopographic(threadData.freeFieldFinder.getTriangles(), threadData.freeFieldFinder.getVertices())
+                kmlDocument.writeBuildings(threadData.freeFieldFinder)
+            }
+            return new RayOut(true, pathData, threadData, this)
         }
     }
 
     private static class RayOut extends ComputeRaysOut {
-        RayOut(boolean keepRays, PropagationProcessPathData pathData, PropagationProcessData processData) {
-            super(keepRays, pathData, processData);
+        JDBCComputeRaysOut jdbccomputeraysout
+
+        RayOut(boolean keepRays, PropagationProcessPathData pathData, PropagationProcessData processData, JDBCComputeRaysOut jdbccomputeraysout) {
+            super(keepRays, pathData, processData)
+            this.jdbccomputeraysout = jdbccomputeraysout
+        }
+
+        @Override
+        void finalizeReceiver(long receiverId) {
+            super.finalizeReceiver(receiverId);
+            if(jdbccomputeraysout.kmlDocument != null && receiverId < inputData.receiversPk.size()) {
+                receiverId = inputData.receiversPk.get((int)receiverId);
+                if(receiverId == jdbccomputeraysout.exportReceiverRay) {
+                    // Export rays
+                    jdbccomputeraysout.kmlDocument.writeRays(propagationPaths)
+                }
+            }
+            propagationPaths.clear()
         }
     }
 
+}
+
+
+public class ProgressLogger implements ProgressVisitor {
+    private static final Logger LOGGER = LoggerFactory.getLogger("gui."+ProgressLogger.class);
+    private int receiverCount = 1;
+    private int processed = 0;
+    private int lastLogProgression = 0;
+
+    @Override
+    public ProgressVisitor subProcess(int i) {
+        receiverCount = i;
+        processed = 0;
+        return this;
+    }
+
+    @Override
+    public void endStep() {
+        synchronized (this) {
+            processed = Math.min(receiverCount, processed + 1);
+            int prog = (int) ((processed / (double) receiverCount) * 100);
+            if (prog != lastLogProgression) {
+                lastLogProgression = prog;
+                LOGGER.info(prog+" %");
+            }
+        }
+    }
+
+    @Override
+    public void setStep(int i) {
+
+    }
+
+    @Override
+    public int getStepCount() {
+        return 0;
+    }
+
+    @Override
+    public void endOfProgress() {
+
+    }
+
+    @Override
+    public double getProgression() {
+        return 0;
+    }
+
+    @Override
+    public boolean isCanceled() {
+        return false;
+    }
+
+    @Override
+    public void cancel() {
+
+    }
+
+    @Override
+    public void addPropertyChangeListener(String s, PropertyChangeListener listener) {
+
+    }
+
+    @Override
+    public void removePropertyChangeListener(PropertyChangeListener listener) {
+
+    }
 }
