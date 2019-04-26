@@ -387,11 +387,11 @@ class OneRun {
                 pointNoiseMap.setHeightField("HAUTEUR")
                 pointNoiseMap.setDemTable("DEM_LITE2")
                 pointNoiseMap.setComputeHorizontalDiffraction(false)
-                pointNoiseMap.setMaximumPropagationDistance(450)
+                pointNoiseMap.setMaximumPropagationDistance(1200)
                 pointNoiseMap.setMaximumReflectionDistance(50)
                 pointNoiseMap.setWallAbsorption(0.1)
                 //pointNoiseMap.setSoilTableName("LAND_USE_ZONE_CAPTEUR2")
-                pointNoiseMap.setThreadCount(1)
+                pointNoiseMap.setThreadCount(4)
 
 
                 pointNoiseMap.initialize(connection, new EmptyProgressVisitor())
@@ -408,11 +408,6 @@ class OneRun {
                         }
                     }
                 }
-
-                allLevels
-
-
-
             }
 
              // Ici on rentre dans la phase calcul de la matrice de transfer
